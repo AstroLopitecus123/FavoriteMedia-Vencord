@@ -17,6 +17,7 @@
 
 [![Vencord UserPlugin](https://img.shields.io/badge/Platform-Vencord-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://vencord.dev)
 [![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+![Views](https://komarev.com/ghpvc/?username=AstroLopitecus123-FavoriteMedia-Vencord&label=VIEWS&style=for-the-badge&color=5865F2)
 
 </div>
 
