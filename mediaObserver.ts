@@ -1,10 +1,16 @@
-import { MessageStore, showToast } from "@webpack/common";
+import { MessageStore, SelectedChannelStore, showToast } from "@webpack/common";
 
 import { cleanUrl, FMDB, getUrlExt, getUrlName, isSameMedia } from "./db";
 import { t } from "./i18n";
 import { fetchMediaBuffer } from "./sendMedia";
 import { settings } from "./settings";
 import { MediaItem, MediaType } from "./types";
+
+function safeToast(opts: any) {
+    try {
+        showToast(opts);
+    } catch { }
+}
 
 const STAR_FILLED = `<svg viewBox="0 0 24 24" width="18" height="18" fill="#FEE75C"><path d="M10.81 2.86c.38-1.15 2-1.15 2.38 0l1.89 5.83h6.12c1.2 0 1.71 1.54.73 2.25l-4.95 3.6 1.9 5.82a1.25 1.25 0 0 1-1.93 1.4L12 18.16l-4.95 3.6c-.98.7-2.3-.25-1.92-1.4l1.89-5.82-4.95-3.6a1.25 1.25 0 0 1 .73-2.25h6.12l1.9-5.83Z"/></svg>`;
 const STAR_OUTLINE = `<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path fill-rule="evenodd" clip-rule="evenodd" d="M2.07 10.94a1.25 1.25 0 0 1 .73-2.25h6.12l1.9-5.83c.37-1.15 2-1.15 2.37 0l1.89 5.83h6.12c1.2 0 1.71 1.54.73 2.25l-4.95 3.6 1.9 5.82a1.25 1.25 0 0 1-1.93 1.4L12 18.16l-4.95 3.6c-.98.7-2.3-.25-1.92-1.4l1.89-5.82-4.95-3.6Zm11.55-.25h5.26l-4.25 3.09 1.62 5-4.25-3.1-4.25 3.1 1.62-5-4.25-3.1h5.26l1.62-5 1.62 5Z"/></svg>`;
@@ -44,24 +50,52 @@ interface Extracted {
 }
 
 function getMessageForContainer(container: HTMLElement) {
-    const messageEl = container.closest<HTMLLIElement>('li[id^="chat-messages-"]');
-    if (!messageEl?.id) return null;
-    const match = messageEl.id.match(/^chat-messages-(\d+)-(\d+)$/);
-    if (!match) return null;
-    const [, channelId, messageId] = match;
-    try {
-        return MessageStore.getMessage(channelId, messageId);
-    } catch {
-        return null;
+    const messageEl = container.closest<HTMLElement>(
+        '[data-list-item-id*="chat-messages"], li[id^="chat-messages-"], [class*="messageListItem"], [id^="message-accessories-"], [id^="message-content-"], [class*="message__"]'
+    );
+    if (!messageEl) return null;
+
+    const channelId = SelectedChannelStore.getChannelId();
+    const candidateEls = [
+        messageEl,
+        messageEl.querySelector<HTMLElement>('[data-list-item-id*="chat-messages"]'),
+        messageEl.querySelector<HTMLElement>('li[id^="chat-messages-"], [id^="chat-messages-"]'),
+        messageEl.querySelector<HTMLElement>('[id^="message-accessories-"]'),
+        messageEl.querySelector<HTMLElement>('[id^="message-content-"]')
+    ].filter(Boolean) as HTMLElement[];
+
+    for (const el of candidateEls) {
+        const str = `${el.getAttribute("data-list-item-id") || ""} ${el.id || ""}`;
+        const matchBoth = str.match(/chat-messages(?:___|-)(\d+)[-_](\d+)/);
+        if (matchBoth) {
+            try {
+                const msg = MessageStore.getMessage(matchBoth[1], matchBoth[2]);
+                if (msg) return msg;
+            } catch { }
+        }
+        const singleMatch = str.match(/chat-messages(?:___|-)(\d+)/) || str.match(/message-(?:accessories|content)-(\d+)/);
+        if (singleMatch && channelId) {
+            try {
+                const msg = MessageStore.getMessage(channelId, singleMatch[1]);
+                if (msg) return msg;
+            } catch { }
+        }
     }
+
+    return null;
 }
 
 function extractUrl(container: HTMLElement): Extracted | null {
     const fileNameLink = container.querySelector<HTMLAnchorElement>('a[class*="fileNameLink"]');
 
     const audio = container.querySelector("audio");
-    if (audio || container.matches('[class*="wrapperAudio"]')) {
-        const url = fileNameLink?.href || audio?.currentSrc || audio?.src || "";
+    if (audio || container.matches('[class*="wrapperAudio"], [class*="audioPlayer"], [class*="voiceMessage"]')) {
+        let url = fileNameLink?.href || audio?.currentSrc || audio?.src || audio?.querySelector("source")?.src || "";
+        if (!url) {
+            const msg = getMessageForContainer(container);
+            const audioAtt = msg?.attachments?.find((a: any) => a.content_type?.startsWith("audio/") || AUDIO_EXT.test(getPathName(a.filename || a.url)));
+            if (audioAtt) url = audioAtt.url;
+        }
         const clean = cleanUrl(url);
         if (clean) return { url: clean, type: "audio", src: clean, placement: "inline", anchorEl: fileNameLink ?? undefined };
     }
@@ -199,7 +233,7 @@ export function toggleFavoriteMedia(url: string, type: MediaType, poster?: strin
         typeData.medias.splice(index, 1);
         FMDB.setStoredData(type, typeData);
         FMDB.deleteCache(removed.url);
-        showToast({ text: t("removed"), variant: "success" } as any);
+        safeToast({ text: t("removed"), variant: "success" } as any);
     } else {
         const newItem: MediaItem = {
             url: clean,
@@ -213,7 +247,7 @@ export function toggleFavoriteMedia(url: string, type: MediaType, poster?: strin
 
         if (allowCaching) cacheOriginal(clean, src);
 
-        showToast({ text: t("added"), variant: "success" } as any);
+        safeToast({ text: t("added"), variant: "success" } as any);
     }
 
     updateAllStars();
@@ -242,13 +276,12 @@ export function updateAllStars() {
 }
 
 function processContainer(container: HTMLElement) {
-    if (!container.closest('li[id^="chat-messages-"]')) return;
+    const messageContainer = container.closest(
+        '[data-list-item-id*="chat-messages"], [class*="messageListItem"], li[id^="chat-messages-"], [id^="message-accessories-"], [id^="message-content-"], [class*="message__"]'
+    );
+    if (!messageContainer) return;
     if (container.closest(".fm-picker-modal") || container.closest(".fm-ep-panel-host")) return;
     if (container.dataset.fmProcessed) return;
-
-    if (container.matches('[class*="imageWrapper"]') && container.closest('[class*="attachment_"], [class*="mosaicItemContent"], [class*="wrapper_"], [class*="mediaPlayer"]')) {
-        return;
-    }
 
     if (container.querySelector("[data-fm-processed]") || container.parentElement?.closest("[data-fm-processed]")) return;
 
@@ -286,8 +319,12 @@ function scan() {
         '[class*="wrapperAudio"]',
         '[class*="attachment_"]',
         '[class*="mosaicItemContent"]',
+        '[class*="visualMediaItemContainer"]',
+        '[class*="mosaicItem"]',
+        '[class*="imageWrapper"]',
+        '[class*="mediaPlayer"]',
         'div:has(> video)',
-        '[class*="imageWrapper"]'
+        'div:has(> audio)'
     ];
 
     try {

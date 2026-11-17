@@ -13,6 +13,12 @@ import { MediaItem, MediaType } from "./types";
 const CloudUpload: typeof TCloudUpload = findLazy(m => m.prototype?.trackUploadFinished);
 const Native = VencordNative.pluginHelpers?.FavoriteMedia as PluginNative<typeof import("./native")> | undefined;
 
+function safeToast(opts: any) {
+    try {
+        showToast(opts);
+    } catch { }
+}
+
 function getMaxUploadSize(): number {
     const user = UserStore?.getCurrentUser?.();
     if (user?.premiumType === 2) return 500 * 1024 * 1024;
@@ -124,7 +130,7 @@ export async function sendMedia(media: MediaItem, type: MediaType, instant: bool
         return;
     }
 
-    showToast({ text: t("preparing"), variant: "message" as any });
+    safeToast({ text: t("preparing"), variant: "message" as any });
 
     let buf: ArrayBuffer | null = null;
     let mime = "";
@@ -152,14 +158,14 @@ export async function sendMedia(media: MediaItem, type: MediaType, instant: bool
     }
 
     if (!buf) {
-        showToast({ text: t("downloadFailed"), variant: "failure" as any });
+        safeToast({ text: t("downloadFailed"), variant: "failure" as any });
         sendLink(channelId, currentMedia.src || currentMedia.url);
         return;
     }
 
     const maxUpload = getMaxUploadSize();
     if (buf.byteLength > maxUpload) {
-        showToast({ text: t("tooBig"), variant: "message" as any });
+        safeToast({ text: t("tooBig"), variant: "message" as any });
         sendLink(channelId, currentMedia.src || currentMedia.url);
         return;
     }
@@ -167,48 +173,53 @@ export async function sendMedia(media: MediaItem, type: MediaType, instant: bool
     const finalMime = (mime && mime !== "application/octet-stream") ? mime : getMimeFromExt(currentMedia.ext, type);
     const file = new File([buf], getFileName(currentMedia, type), { type: finalMime });
 
-    if (!instant) {
+    if (!instant || !CloudUpload) {
         const channel = ChannelStore.getChannel(channelId);
-        UploadHandler.promptToUpload([file], channel, 0);
+        if (channel) UploadHandler.promptToUpload([file], channel, 0);
         return;
     }
 
-    const reply = PendingReplyStore.getPendingReply(channelId);
-    if (reply) FluxDispatcher.dispatch({ type: "DELETE_PENDING_REPLY", channelId });
+    try {
+        const reply = PendingReplyStore.getPendingReply(channelId);
+        if (reply) FluxDispatcher.dispatch({ type: "DELETE_PENDING_REPLY", channelId });
 
-    const upload = new CloudUpload({
-        file,
-        isThumbnail: false,
-        platform: CloudUploadPlatform.WEB,
-    }, channelId);
+        const upload = new CloudUpload({
+            file,
+            isThumbnail: false,
+            platform: CloudUploadPlatform.WEB,
+        }, channelId);
 
-    upload.on("complete", () => {
-        RestAPI.post({
-            url: Constants.Endpoints.MESSAGES(channelId),
-            body: {
-                channel_id: channelId,
-                content: "",
-                nonce: SnowflakeUtils.fromTimestamp(Date.now()),
-                sticker_ids: [],
-                type: 0,
-                attachments: [{
-                    id: "0",
-                    filename: upload.filename,
-                    uploaded_filename: upload.uploadedFilename,
-                }],
-                message_reference: reply ? MessageActions.getSendMessageOptionsForReply(reply)?.messageReference : null,
-            }
-        }).then((res: any) => {
-            const newUrl = res?.body?.attachments?.[0]?.url;
-            if (newUrl) {
-                saveBackupUploadedUrl(currentMedia, type, newUrl, primaryFailed);
-            }
-        }).catch(() => showToast({ text: t("sendFailed"), variant: "failure" as any }));
-    });
-    upload.on("error", () => {
-        showToast({ text: t("uploadFailed"), variant: "failure" as any });
-        sendLink(channelId, currentMedia.src || currentMedia.url);
-    });
+        upload.on("complete", () => {
+            RestAPI.post({
+                url: Constants.Endpoints.MESSAGES(channelId),
+                body: {
+                    channel_id: channelId,
+                    content: "",
+                    nonce: SnowflakeUtils.fromTimestamp(Date.now()),
+                    sticker_ids: [],
+                    type: 0,
+                    attachments: [{
+                        id: "0",
+                        filename: upload.filename,
+                        uploaded_filename: upload.uploadedFilename,
+                    }],
+                    message_reference: reply ? MessageActions.getSendMessageOptionsForReply(reply)?.messageReference : null,
+                }
+            }).then((res: any) => {
+                const newUrl = res?.body?.attachments?.[0]?.url;
+                if (newUrl) {
+                    saveBackupUploadedUrl(currentMedia, type, newUrl, primaryFailed);
+                }
+            }).catch(() => safeToast({ text: t("sendFailed"), variant: "failure" as any }));
+        });
+        upload.on("error", () => {
+            safeToast({ text: t("uploadFailed"), variant: "failure" as any });
+            sendLink(channelId, currentMedia.src || currentMedia.url);
+        });
 
-    upload.upload();
+        upload.upload();
+    } catch {
+        const channel = ChannelStore.getChannel(channelId);
+        if (channel) UploadHandler.promptToUpload([file], channel, 0);
+    }
 }

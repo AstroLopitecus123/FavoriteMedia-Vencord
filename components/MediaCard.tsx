@@ -126,7 +126,9 @@ export const MediaCard: React.FC<MediaCardProps> = ({
             await sendMedia(media, type, alwaysSendInstantly);
         } catch (err) {
             console.error("[FavoriteMedia] Error sending media:", err);
-            showToast({ text: t("sendFailed"), variant: "failure" } as any);
+            try {
+                showToast({ text: t("sendFailed"), variant: "failure" } as any);
+            } catch { }
         }
     };
 
